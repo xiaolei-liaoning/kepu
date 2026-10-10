@@ -86,3 +86,21 @@ export interface CultureData {
   title: string
   scrolls: Scroll[]
 }
+
+/** 收官小测的一道选择题 */
+export interface QuizQuestion {
+  /** 题干 */
+  q: string
+  /** 4 个选项 */
+  options: string[]
+  /** 正确选项下标 0-3 */
+  answerIndex: number
+  /** 答后解析（1-2 句，出自脚本故事） */
+  explain: string
+}
+
+/** 一幅画卷的收官小测：固定 4 题，对应 4 幕 */
+export interface ScrollQuiz {
+  scrollId: number
+  questions: QuizQuestion[]
+}

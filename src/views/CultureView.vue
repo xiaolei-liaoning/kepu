@@ -7,7 +7,8 @@ import { computed, reactive, ref } from 'vue'
 import type { CSSProperties } from 'vue'
 import { cultureData } from '@/data/culture'
 import { sceneVideos, sceneVideoKey } from '@/data/videos'
-import type { Scroll } from '@/types'
+import { scrollQuizzes } from '@/data/quiz'
+import type { QuizQuestion, Scroll } from '@/types'
 import SceneVideo from '@/components/SceneVideo.vue'
 
 /* ============================== 类型 ============================== */
@@ -22,6 +23,14 @@ interface ScrollProgress {
   stamped: boolean[]
   /** 收尾知识点卡面板是否已呈现 */
   cardsOpen: boolean
+}
+
+/** 收官小测的答题进度 */
+interface QuizState {
+  phase: 'idle' | 'playing' | 'done'
+  currentIndex: number
+  answers: (number | null)[]
+  correctCount: number
 }
 
 /** 画卷配色：在共享宣纸 / 水墨体系内按画卷 id 变化 */
@@ -71,6 +80,12 @@ for (const scroll of cultureData.scrolls) {
   })
 }
 
+/** 各画卷小测进度：离开画卷后保留 */
+const quizStates = reactive(new Map<number, QuizState>())
+for (const scroll of cultureData.scrolls) {
+  quizStates.set(scroll.id, { phase: 'idle', currentIndex: 0, answers: [], correctCount: 0 })
+}
+
 /** 「镜头」说明的展开状态（按幕下标） */
 const lensOpen = reactive(new Set<number>())
 
@@ -92,6 +107,44 @@ const currentSceneNo = computed(() => {
 })
 
 const stampedCount = computed(() => activeProgress.value?.stamped.filter(Boolean).length ?? 0)
+
+const activeQuiz = computed<QuizState | null>(() =>
+  activeScrollId.value === null ? null : (quizStates.get(activeScrollId.value) ?? null),
+)
+
+const activeQuizQuestions = computed<QuizQuestion[]>(() => {
+  if (!activeScroll.value) return []
+  return scrollQuizzes.find((q) => q.scrollId === activeScroll.value!.id)?.questions ?? []
+})
+
+const currentQuestion = computed<QuizQuestion | null>(() => {
+  if (!activeQuiz.value || activeQuizQuestions.value.length === 0) return null
+  return activeQuizQuestions.value[activeQuiz.value.currentIndex] ?? null
+})
+
+/** 当前题已选答案（未作答时为 null；answers 稀疏数组越界访问是 undefined，需归一） */
+const currentAnswer = computed<number | null>(() => {
+  if (!activeQuiz.value) return null
+  return activeQuiz.value.answers[activeQuiz.value.currentIndex] ?? null
+})
+
+const isCurrentCorrect = computed(() => {
+  if (currentAnswer.value === null || !currentQuestion.value) return false
+  return currentAnswer.value === currentQuestion.value.answerIndex
+})
+
+const quizScore = computed(() => {
+  if (!activeQuiz.value || activeQuizQuestions.value.length === 0) return 0
+  return Math.round((activeQuiz.value.correctCount / activeQuizQuestions.value.length) * 100)
+})
+
+const quizTier = computed(() => {
+  const s = quizScore.value
+  if (s === 100) return '博闻强识'
+  if (s >= 75) return '略通门径'
+  if (s >= 50) return '初窥堂奥'
+  return '再读一遍'
+})
 
 /* ============================== 方法 ============================== */
 
@@ -158,6 +211,44 @@ function toggleStamp(cardIndex: number): void {
 
 function isLastScene(sceneIndex: number): boolean {
   return activeScroll.value !== null && sceneIndex === activeScroll.value.scenes.length - 1
+}
+
+function startQuiz(): void {
+  if (activeScrollId.value === null) return
+  const qs = quizStates.get(activeScrollId.value)
+  if (!qs) return
+  qs.phase = 'playing'
+  qs.currentIndex = 0
+  qs.answers = []
+  qs.correctCount = 0
+}
+
+function answerQuestion(optionIndex: number): void {
+  if (!activeQuiz.value || !currentQuestion.value) return
+  if (currentAnswer.value !== null) return
+  activeQuiz.value.answers[activeQuiz.value.currentIndex] = optionIndex
+  if (optionIndex === currentQuestion.value.answerIndex) {
+    activeQuiz.value.correctCount++
+  }
+}
+
+function nextQuestion(): void {
+  if (!activeQuiz.value) return
+  if (activeQuiz.value.currentIndex < activeQuizQuestions.value.length - 1) {
+    activeQuiz.value.currentIndex++
+  } else {
+    activeQuiz.value.phase = 'done'
+  }
+}
+
+function retryQuiz(): void {
+  if (activeScrollId.value === null) return
+  const qs = quizStates.get(activeScrollId.value)
+  if (!qs) return
+  qs.phase = 'idle'
+  qs.currentIndex = 0
+  qs.answers = []
+  qs.correctCount = 0
 }
 </script>
 
@@ -297,6 +388,54 @@ function isLastScene(sceneIndex: number): boolean {
               <h5 class="kcard-title">{{ card.title }}</h5>
               <p class="kcard-fact">{{ card.fact }}</p>
             </article>
+          </div>
+        </section>
+
+        <!-- 收官小测 -->
+        <section v-if="activeProgress.cardsOpen && activeQuiz" class="quiz" aria-label="收官小测">
+          <h4 class="quiz-title">收官小测</h4>
+
+          <div v-if="activeQuiz.phase === 'idle'" class="quiz-entry">
+            <p class="quiz-desc">四题检验本卷所学，答完即知分数。</p>
+            <button type="button" class="quiz-start-btn" @click="startQuiz">收官小测 · 4 题</button>
+          </div>
+
+          <div v-else-if="activeQuiz.phase === 'playing'" class="quiz-playing">
+            <p class="quiz-progress">第 {{ activeQuiz.currentIndex + 1 }} / {{ activeQuizQuestions.length }} 题</p>
+            <p class="quiz-q">{{ currentQuestion?.q }}</p>
+            <div class="quiz-options">
+              <button
+                v-for="(opt, optIndex) in currentQuestion?.options ?? []"
+                :key="optIndex"
+                type="button"
+                class="quiz-opt"
+                :class="{
+                  'quiz-opt--correct': currentAnswer !== null && optIndex === currentQuestion?.answerIndex,
+                  'quiz-opt--wrong': currentAnswer === optIndex && optIndex !== currentQuestion?.answerIndex,
+                  'quiz-opt--locked': currentAnswer !== null,
+                }"
+                :disabled="currentAnswer !== null"
+                @click="answerQuestion(optIndex)"
+              >
+                {{ opt }}
+              </button>
+            </div>
+            <div v-if="currentAnswer !== null" class="quiz-feedback">
+              <p class="quiz-verdict">{{ isCurrentCorrect ? '答对' : '答错' }}</p>
+              <p class="quiz-explain">{{ currentQuestion?.explain }}</p>
+              <button type="button" class="quiz-next-btn" @click="nextQuestion">
+                {{ activeQuiz.currentIndex < activeQuizQuestions.length - 1 ? '下一题' : '查看分数' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-else class="quiz-done">
+            <p class="quiz-score">{{ activeQuiz.correctCount }}/{{ activeQuizQuestions.length }} · {{ quizScore }} 分</p>
+            <p class="quiz-tier">{{ quizTier }}</p>
+            <div class="quiz-actions">
+              <button type="button" class="quiz-retry-btn" @click="retryQuiz">再来一次</button>
+              <button type="button" class="quiz-back-btn" @click="exitToPicker">回到选卷</button>
+            </div>
           </div>
         </section>
       </div>
@@ -878,6 +1017,233 @@ function isLastScene(sceneIndex: number): boolean {
   color: var(--ink-soft);
 }
 
+/* ---- 收官小测 ---- */
+
+.quiz {
+  margin-top: 44px;
+  padding-top: 30px;
+  border-top: 2px solid var(--scroll-accent);
+  animation: fade-in 0.4s ease both;
+}
+
+.quiz-title {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  text-align: center;
+  color: var(--scroll-accent-deep);
+}
+
+.quiz-entry {
+  text-align: center;
+}
+
+.quiz-desc {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--ink-faint);
+}
+
+.quiz-start-btn {
+  margin-top: 20px;
+  border: 1.5px solid var(--scroll-accent);
+  border-radius: 4px;
+  background: var(--scroll-wash);
+  padding: 12px 32px;
+  font-size: 14px;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em;
+  color: var(--scroll-accent-deep);
+  transition: background 0.25s ease, color 0.25s ease, transform 0.25s ease;
+}
+
+.quiz-start-btn:hover {
+  background: var(--scroll-accent);
+  color: var(--scroll-paper);
+}
+
+.quiz-start-btn:active {
+  transform: scale(0.97);
+}
+
+.quiz-playing {
+  margin-top: 20px;
+}
+
+.quiz-progress {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-align: center;
+  color: var(--ink-faint);
+}
+
+.quiz-q {
+  margin: 16px 0 0;
+  font-size: 17px;
+  line-height: 1.9;
+  color: var(--scroll-ink);
+  text-align: center;
+}
+
+.quiz-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.quiz-opt {
+  min-height: 48px;
+  padding: 12px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.62);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  text-align: left;
+  transition: border-color 0.25s ease, background 0.25s ease, color 0.25s ease;
+}
+
+.quiz-opt:hover:not(:disabled) {
+  border-color: var(--scroll-accent);
+  color: var(--scroll-accent-deep);
+}
+
+.quiz-opt:disabled {
+  cursor: default;
+}
+
+.quiz-opt--correct {
+  border-color: var(--jade);
+  background: rgba(92, 125, 94, 0.1);
+  color: var(--jade);
+}
+
+.quiz-opt--wrong {
+  border-color: var(--seal);
+  background: rgba(176, 58, 46, 0.08);
+  color: var(--seal);
+}
+
+.quiz-opt--locked {
+  opacity: 0.6;
+}
+
+.quiz-opt--locked.quiz-opt--correct,
+.quiz-opt--locked.quiz-opt--wrong {
+  opacity: 1;
+}
+
+.quiz-feedback {
+  margin-top: 20px;
+  padding: 16px 20px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.45);
+  animation: fade-in 0.35s ease both;
+}
+
+.quiz-verdict {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-align: center;
+  color: var(--scroll-accent-deep);
+}
+
+.quiz-explain {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+.quiz-next-btn {
+  display: block;
+  margin: 16px auto 0;
+  border: 1.5px solid var(--scroll-accent);
+  border-radius: 4px;
+  background: var(--scroll-wash);
+  padding: 10px 28px;
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  text-indent: 0.24em;
+  color: var(--scroll-accent-deep);
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+.quiz-next-btn:hover {
+  background: var(--scroll-accent);
+  color: var(--scroll-paper);
+}
+
+.quiz-done {
+  margin-top: 20px;
+  text-align: center;
+}
+
+.quiz-score {
+  margin: 16px 0 0;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--scroll-ink);
+}
+
+.quiz-tier {
+  margin: 10px 0 0;
+  font-size: 15px;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  color: var(--seal);
+}
+
+.quiz-actions {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.quiz-retry-btn,
+.quiz-back-btn {
+  min-height: 44px;
+  padding: 10px 24px;
+  border-radius: 4px;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-indent: 0.2em;
+  transition: background 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+}
+
+.quiz-retry-btn {
+  border: 1.5px solid var(--scroll-accent);
+  background: var(--scroll-wash);
+  color: var(--scroll-accent-deep);
+}
+
+.quiz-retry-btn:hover {
+  background: var(--scroll-accent);
+  color: var(--scroll-paper);
+}
+
+.quiz-back-btn {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-soft);
+}
+
+.quiz-back-btn:hover {
+  border-color: var(--seal);
+  color: var(--seal);
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -965,7 +1331,9 @@ function isLastScene(sceneIndex: number): boolean {
   .scene-lens,
   .lens-video,
   .clue-revealed,
-  .cards {
+  .cards,
+  .quiz,
+  .quiz-feedback {
     animation: none;
   }
 
@@ -973,7 +1341,12 @@ function isLastScene(sceneIndex: number): boolean {
   .kcard,
   .clue-btn,
   .bar-btn,
-  .home-link {
+  .home-link,
+  .quiz-start-btn,
+  .quiz-opt,
+  .quiz-next-btn,
+  .quiz-retry-btn,
+  .quiz-back-btn {
     transition: none;
   }
 }
