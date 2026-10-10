@@ -144,7 +144,8 @@ function onError(): void {
   display: block;
   width: 100%;
   height: auto;
-  max-height: 360px;
+  /* 不再限高：高度由容器宽度 + 视频原生宽高比（16:9）决定，
+     大屏下让画面尽量占满容器宽度（16:9 @ ~900px ≈ 506px 高，可接受） */
   border-radius: 2px;
   background: #14110c;
 }

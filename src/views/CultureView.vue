@@ -615,7 +615,8 @@ function retryQuiz(): void {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  max-width: 880px;
+  /* 与卷轴纸面同宽（原 880px 比纸面 960px 窄，视觉不一致） */
+  max-width: 960px;
   margin: 0 auto;
   padding: 14px 8px;
   background: rgba(246, 241, 229, 0.88);
@@ -662,9 +663,10 @@ function retryQuiz(): void {
 
 /* ---- 卷轴纸面 ---- */
 
+/* 卷轴纸面：加宽让幕内视频卡尽量占满（原 780px 限制导致画面偏小） */
 .scroll-paper {
   position: relative;
-  max-width: 780px;
+  max-width: 960px;
   margin: 40px auto 0;
   padding: 60px 64px 72px;
   overflow: hidden;
